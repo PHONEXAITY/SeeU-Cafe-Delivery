@@ -1,25 +1,38 @@
 import SwiftUI
 
 struct ContentView: View {
-    @State private var isLoggedIn = false
+    @StateObject private var apiService = APIService.shared
+    @StateObject private var mapBoxManager = MapBoxManager.shared
     @State private var employeeId = ""
 
     var body: some View {
-        if isLoggedIn {
-            MainTabView(employeeId: employeeId)
-        } else {
-            LoginView(isLoggedIn: $isLoggedIn, employeeId: $employeeId)
+        Group {
+            if apiService.isAuthenticated {
+                MainTabView()
+                    .environmentObject(apiService)
+                    .environmentObject(mapBoxManager)
+            } else {
+                LoginView()
+                    .environmentObject(apiService)
+            }
+        }
+        .onAppear {
+            // Check if already authenticated
+            if apiService.isAuthenticated && apiService.currentEmployee != nil {
+                print("User already authenticated")
+            }
         }
     }
 }
 
-// MARK: - Login View
+// MARK: - Login View with API Integration
 struct LoginView: View {
-    @Binding var isLoggedIn: Bool
-    @Binding var employeeId: String
+    @EnvironmentObject var apiService: APIService
     @State private var inputEmployeeId = ""
     @State private var isLoading = false
     @State private var showError = false
+    @State private var errorMessage = ""
+    @State private var cancellables = Set<AnyCancellable>()
 
     var body: some View {
         GeometryReader { geometry in
@@ -60,7 +73,7 @@ struct LoginView: View {
                                         )
                                     )
 
-                                Text("Delivery Partner") // Assuming this is intended to be English
+                                Text("Delivery Partner")
                                     .font(.system(size: 18, weight: .medium))
                                     .foregroundColor(.secondary)
                             }
@@ -69,7 +82,7 @@ struct LoginView: View {
                         // Login form
                         VStack(spacing: 24) {
                             VStack(alignment: .leading, spacing: 12) {
-                                Text("ລະຫັດພະນັກງານ") // Translated: Employee ID
+                                Text("ລະຫັດພະນັກງານ")
                                     .font(.system(size: 16, weight: .semibold))
                                     .foregroundColor(.primary)
 
@@ -79,9 +92,10 @@ struct LoginView: View {
                                         .foregroundColor(.orange)
                                         .frame(width: 24)
 
-                                    TextField("ປ້ອນລະຫັດພະນັກງານ", text: $inputEmployeeId) // Translated: Enter Employee ID
+                                    TextField("ປ້ອນລະຫັດພະນັກງານ", text: $inputEmployeeId)
                                         .font(.system(size: 16, weight: .medium))
                                         .keyboardType(.numberPad)
+                                        .disabled(isLoading)
                                 }
                                 .padding(.horizontal, 20)
                                 .padding(.vertical, 16)
@@ -108,7 +122,7 @@ struct LoginView: View {
                                             .font(.system(size: 18))
                                     }
 
-                                    Text(isLoading ? "ກຳລັງເຂົ້າສູ່ລະບົບ..." : "ເຂົ້າສູ່ລະບົບ") // Translated: Logging in... / Login
+                                    Text(isLoading ? "ກຳລັງເຂົ້າສູ່ລະບົບ..." : "ເຂົ້າສູ່ລະບົບ")
                                         .font(.system(size: 18, weight: .semibold))
                                 }
                                 .foregroundColor(.white)
@@ -140,30 +154,47 @@ struct LoginView: View {
                 }
             }
         }
-        .alert("ເຂົ້າສູ່ລະບົບບໍ່ສຳເລັດ", isPresented: $showError) { // Translated: Login Failed
-            Button("ຕົກລົງ") { } // Translated: OK
+        .alert("ເຂົ້າສູ່ລະບົບບໍ່ສຳເລັດ", isPresented: $showError) {
+            Button("ຕົກລົງ") { }
         } message: {
-            Text("ກະລຸນາກວດສອບລະຫັດພະນັກງານຂອງທ່ານ ແລ້ວລອງໃໝ່ອີກຄັ້ງ.") // Translated: Please check your employee ID and try again.
+            Text(errorMessage)
         }
     }
 
     private func login() {
-        isLoading = true
-
-        // TODO: Integrate with backend API
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-            isLoading = false
-            if inputEmployeeId.count >= 3 { // Assuming this logic is language-independent
-                employeeId = inputEmployeeId
-                withAnimation(.spring(response: 0.6, dampingFraction: 0.8)) {
-                    isLoggedIn = true
-                }
-            } else {
-                showError = true
-            }
-        }
-    }
-}
+         guard !inputEmployeeId.isEmpty else { return }
+         
+         isLoading = true
+         errorMessage = ""
+         
+         apiService.login(employeeId: inputEmployeeId)
+             .sink(
+                 receiveCompletion: { completion in
+                     DispatchQueue.main.async {
+                         self.isLoading = false
+                         
+                         if case .failure(let error) = completion {
+                             self.errorMessage = "ບໍ່ສາມາດເຊື່ອມຕໍ່ກັບເຊີເວີໄດ້: \(error.localizedDescription)"
+                             self.showError = true
+                         }
+                     }
+                 },
+                 receiveValue: { response in
+                     DispatchQueue.main.async {
+                         self.isLoading = false
+                         
+                         if response.success {
+                             print("Login successful for employee: \(response.employee?.fullName ?? "")")
+                         } else {
+                             self.errorMessage = response.message ?? "ກະລຸນາກວດສອບລະຫັດພະນັກງານຂອງທ່ານ"
+                             self.showError = true
+                         }
+                     }
+                 }
+             )
+             .store(in: &cancellables)
+     }
+ }
 
 // MARK: - Animated Background
 struct AnimatedBackground: View {
@@ -219,31 +250,36 @@ struct FloatingCircle: View {
     }
 }
 
-// MARK: - Main Tab View
+// MARK: - Main Tab View with API Integration
 struct MainTabView: View {
-    let employeeId: String
+    @EnvironmentObject var apiService: APIService
+    @EnvironmentObject var mapBoxManager: MapBoxManager
     @State private var selectedTab = 0
 
     var body: some View {
         TabView(selection: $selectedTab) {
-            DeliveryListView(employeeId: employeeId)
+            DeliveryListView()
+                .environmentObject(apiService)
                 .tabItem {
                     Image(systemName: selectedTab == 0 ? "list.bullet.circle.fill" : "list.bullet.circle")
-                    Text("ລາຍການສົ່ງ") // Translated: Delivery List
+                    Text("ລາຍການສົ່ງ")
                 }
                 .tag(0)
 
             MapView()
+                .environmentObject(apiService)
+                .environmentObject(mapBoxManager)
                 .tabItem {
                     Image(systemName: selectedTab == 1 ? "map.fill" : "map")
-                    Text("ແຜນທີ່") // Translated: Map
+                    Text("ແຜນທີ່")
                 }
                 .tag(1)
 
-            ProfileView(employeeId: employeeId)
+            ProfileView()
+                .environmentObject(apiService)
                 .tabItem {
                     Image(systemName: selectedTab == 2 ? "person.circle.fill" : "person.circle")
-                    Text("ໂປຣໄຟລ໌") // Translated: Profile
+                    Text("ໂປຣໄຟລ໌")
                 }
                 .tag(2)
         }
@@ -258,21 +294,23 @@ struct MainTabView: View {
     }
 }
 
-// MARK: - Delivery List View
+// MARK: - Delivery List View with API Integration
 struct DeliveryListView: View {
-    let employeeId: String
-    @State private var deliveries: [DeliveryItem] = []
+    @EnvironmentObject var apiService: APIService
+    @State private var deliveries: [Delivery] = []
     @State private var isRefreshing = false
     @State private var searchText = ""
+    @State private var cancellables = Set<AnyCancellable>()
+    @State private var errorMessage = ""
+    @State private var showError = false
 
-    var filteredDeliveries: [DeliveryItem] {
+    var filteredDeliveries: [Delivery] {
         if searchText.isEmpty {
             return deliveries
         }
         return deliveries.filter { delivery in
-            // Assuming orderID and customerName might contain Lao characters for search
-            delivery.orderID.localizedCaseInsensitiveContains(searchText) ||
-            delivery.customerName.localizedCaseInsensitiveContains(searchText)
+            delivery.order.orderId.localizedCaseInsensitiveContains(searchText) ||
+            (delivery.order.user?.fullName.localizedCaseInsensitiveContains(searchText) ?? false)
         }
     }
 
@@ -283,11 +321,17 @@ struct DeliveryListView: View {
                 VStack(spacing: 16) {
                     HStack {
                         VStack(alignment: .leading, spacing: 4) {
-                            Text("ສະບາຍດີ! 👋") // Translated: Hello!
+                            Text("ສະບາຍດີ! 👋")
                                 .font(.system(size: 16, weight: .medium))
                                 .foregroundColor(.secondary)
-                            Text("ລາຍການສົ່ງມື້ນີ້") // Translated: Today's Deliveries
-                                .font(.system(size: 28, weight: .bold))
+                            
+                            if let employee = apiService.currentEmployee {
+                                Text("ສະບາຍດີ \(employee.firstName)")
+                                    .font(.system(size: 24, weight: .bold))
+                            } else {
+                                Text("ລາຍການສົ່ງມື້ນີ້")
+                                    .font(.system(size: 28, weight: .bold))
+                            }
                         }
                         Spacer()
 
@@ -300,7 +344,7 @@ struct DeliveryListView: View {
                     HStack {
                         Image(systemName: "magnifyingglass")
                             .foregroundColor(.gray)
-                        TextField("ຄົ້ນຫາອໍເດີ້...", text: $searchText) // Translated: Search orders...
+                        TextField("ຄົ້ນຫາອໍເດີ້...", text: $searchText)
                             .font(.system(size: 16))
                     }
                     .padding(.horizontal, 16)
@@ -316,87 +360,289 @@ struct DeliveryListView: View {
                 .background(.ultraThinMaterial)
 
                 // Delivery list
-                ScrollView {
-                    LazyVStack(spacing: 12) {
-                        ForEach(filteredDeliveries) { delivery in
-                            NavigationLink(destination: DeliveryDetailView(delivery: delivery)) {
-                                ModernDeliveryCard(delivery: delivery)
-                            }
-                            .buttonStyle(PlainButtonStyle())
+                if deliveries.isEmpty && !isRefreshing {
+                    VStack(spacing: 20) {
+                        Spacer()
+                        
+                        Image(systemName: "bicycle")
+                            .font(.system(size: 50))
+                            .foregroundColor(.gray)
+                        
+                        Text("ຍັງບໍ່ມີການສົ່ງວັນນີ້")
+                            .font(.system(size: 18, weight: .medium))
+                            .foregroundColor(.secondary)
+                        
+                        Button("ໂຫຼດຂໍ້ມູນໃໝ່") {
+                            loadDeliveries()
                         }
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundColor(.orange)
+                        
+                        Spacer()
                     }
-                    .padding(.horizontal, 20)
-                    .padding(.vertical, 16)
-                }
-                .refreshable {
-                    await refreshDeliveries()
+                } else {
+                    ScrollView {
+                        LazyVStack(spacing: 12) {
+                            ForEach(filteredDeliveries, id: \.id) { delivery in
+                                NavigationLink(destination: DeliveryDetailView(delivery: DeliveryItem(from: delivery))) {
+                                    ApiDeliveryCard(delivery: delivery)
+                                }
+                                .buttonStyle(PlainButtonStyle())
+                            }
+                        }
+                        .padding(.horizontal, 20)
+                        .padding(.vertical, 16)
+                    }
+                    .refreshable {
+                        await refreshDeliveries()
+                    }
                 }
             }
             .navigationBarHidden(true)
         }
         .onAppear {
-            loadMockData()
+            loadDeliveries()
+        }
+        .alert("ຂໍ້ຜິດພາດ", isPresented: $showError) {
+            Button("ຕົກລົງ") { }
+        } message: {
+            Text(errorMessage)
         }
     }
 
-    private func loadMockData() {
-        // Mock data is already in Lao for address and item names.
-        deliveries = [
-            DeliveryItem(
-                id: 1,
-                orderID: "ORD1234567890",
-                customerName: "ສົມຊາຍ ໃຈດີ", // Kept as is, assuming it's a name
-                customerPhone: "+856 20 12345678",
-                address: "123 ຖະໜົນສີສະຫວັນວົງ, ຫຼວງພະບາງ",
-                status: .preparing,
-                items: [
-                    OrderItem(name: "ກາເຟຮ້ອນ", quantity: 2, price: 15000),
-                    OrderItem(name: "ເຂົ້າຈີ່ໝູ", quantity: 1, price: 35000)
-                ],
-                totalAmount: 65000,
-                estimatedTime: Date().addingTimeInterval(1800),
-                latitude: 19.8845,
-                longitude: 102.135
-            ),
-            DeliveryItem(
-                id: 2,
-                orderID: "ORD1234567891",
-                customerName: "ມາລີ ສວຍງາມ", // Kept as is
-                customerPhone: "+856 20 87654321",
-                address: "456 ຖະໜົນເລດຮ້ອມ, ຫຼວງພະບາງ",
-                status: .outForDelivery,
-                items: [
-                    OrderItem(name: "ນ້ຳເຊື່ອມ", quantity: 3, price: 12000),
-                    OrderItem(name: "ຂະໜົມເຄັກ", quantity: 1, price: 25000)
-                ],
-                totalAmount: 61000,
-                estimatedTime: Date().addingTimeInterval(900),
-                latitude: 19.8920,
-                longitude: 102.138
-            ),
-            DeliveryItem(
-                id: 3,
-                orderID: "ORD1234567892",
-                customerName: "ກິດຕິ ໝັ້ນໃຈ", // Kept as is
-                customerPhone: "+856 20 55512345",
-                address: "789 ຫໍ່ງປູ, ຫຼວງພະບາງ",
-                status: .delivered,
-                items: [
-                    OrderItem(name: "ເບຍລາວ", quantity: 4, price: 18000),
-                    OrderItem(name: "ປີ້ງໄກ່", quantity: 2, price: 42000)
-                ],
-                totalAmount: 114000,
-                estimatedTime: Date().addingTimeInterval(-600),
-                latitude: 19.8900,
-                longitude: 102.140
+    private func loadDeliveries() {
+        guard let employee = apiService.currentEmployee else { return }
+        
+        isRefreshing = true
+        
+        apiService.getEmployeeDeliveries(employeeId: employee.id)
+            .sink(
+                receiveCompletion: { completion in
+                    DispatchQueue.main.async {
+                        self.isRefreshing = false
+                        
+                        if case .failure(let error) = completion {
+                            self.errorMessage = "ບໍ່ສາມາດໂຫຼດຂໍ້ມູນການສົ່ງໄດ້: \(error.localizedDescription)"
+                            self.showError = true
+                        }
+                    }
+                },
+                receiveValue: { response in
+                    DispatchQueue.main.async {
+                        self.isRefreshing = false
+                        self.deliveries = response.data
+                    }
+                }
             )
-        ]
+            .store(in: &cancellables)
     }
 
     private func refreshDeliveries() async {
-        isRefreshing = true
-        try? await Task.sleep(nanoseconds: 1_500_000_000)
-        isRefreshing = false
+        loadDeliveries()
+        try? await Task.sleep(nanoseconds: 1_000_000_000)
+    }
+}
+
+// MARK: - API Delivery Card
+struct ApiDeliveryCard: View {
+    let delivery: Delivery
+
+    var body: some View {
+        VStack(spacing: 16) {
+            // Header
+            HStack {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(delivery.order.orderId)
+                        .font(.system(size: 18, weight: .bold))
+                        .foregroundColor(.primary)
+
+                    HStack(spacing: 8) {
+                        Image(systemName: "person.fill")
+                            .font(.system(size: 12))
+                            .foregroundColor(.orange)
+                        Text(delivery.order.user?.fullName ?? "ລູກຄ້າ")
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundColor(.secondary)
+                    }
+                }
+
+                Spacer()
+
+                VStack(alignment: .trailing, spacing: 6) {
+                    ApiStatusBadge(status: delivery.status)
+                    Text("\(Int(delivery.order.totalPrice).formatted()) LAK")
+                        .font(.system(size: 16, weight: .bold))
+                        .foregroundColor(.primary)
+                }
+            }
+
+            // Address
+            HStack(spacing: 8) {
+                Image(systemName: "location.fill")
+                    .font(.system(size: 14))
+                    .foregroundColor(.orange)
+
+                Text(delivery.deliveryAddress ?? "ບໍ່ລະບຸທີ່ຢູ່")
+                    .font(.system(size: 14))
+                    .foregroundColor(.secondary)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
+
+                Spacer()
+            }
+
+            // Time and items
+            HStack {
+                HStack(spacing: 6) {
+                    Image(systemName: "clock.fill")
+                        .font(.system(size: 12))
+                        .foregroundColor(.blue)
+                    
+                    if let timeString = delivery.estimatedDeliveryTime {
+                        let formatter = ISO8601DateFormatter()
+                        let date = formatter.date(from: timeString) ?? Date()
+                        Text(date.formatted(date: .omitted, time: .shortened))
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundColor(.blue)
+                    } else {
+                        Text("ບໍ່ລະບຸເວລາ")
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundColor(.blue)
+                    }
+                }
+
+                Spacer()
+
+                HStack(spacing: 6) {
+                    Image(systemName: "bag.fill")
+                        .font(.system(size: 12))
+                        .foregroundColor(.green)
+                    Text("\(delivery.order.orderDetails?.count ?? 0) ລາຍການ")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundColor(.green)
+                }
+            }
+
+            // Action button
+            if delivery.status != "delivered" {
+                ActionButton(delivery: delivery)
+            }
+        }
+        .padding(20)
+        .background(.ultraThinMaterial)
+        .cornerRadius(16)
+        .shadow(color: .black.opacity(0.08), radius: 8, x: 0, y: 4)
+    }
+}
+
+// MARK: - Action Button
+struct ActionButton: View {
+    @EnvironmentObject var apiService: APIService
+    let delivery: Delivery
+    @State private var isUpdating = false
+    @State private var cancellables = Set<AnyCancellable>()
+
+    var body: some View {
+        Button(action: handleAction) {
+            HStack {
+                if isUpdating {
+                    ProgressView()
+                        .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                        .scaleEffect(0.8)
+                } else {
+                    Image(systemName: getActionIcon())
+                    Text(getActionText())
+                        .font(.system(size: 14, weight: .semibold))
+                }
+            }
+            .foregroundColor(.white)
+            .frame(maxWidth: .infinity, minHeight: 40)
+            .background(Color(delivery.status.deliveryStatusColor))
+            .cornerRadius(10)
+        }
+        .disabled(isUpdating)
+    }
+    
+    private func getActionIcon() -> String {
+        switch delivery.status.lowercased() {
+        case "pending", "preparing":
+            return "bicycle"
+        case "out_for_delivery":
+            return "checkmark.circle"
+        default:
+            return "checkmark.circle"
+        }
+    }
+    
+    private func getActionText() -> String {
+        switch delivery.status.lowercased() {
+        case "pending", "preparing":
+            return "ຮັບວຽກນີ້"
+        case "out_for_delivery":
+            return "ສົ່ງສຳເລັດແລ້ວ"
+        default:
+            return "ອັບເດດ"
+        }
+    }
+    
+    private func handleAction() {
+        let newStatus: String
+        
+        switch delivery.status.lowercased() {
+        case "pending", "preparing":
+            newStatus = "out_for_delivery"
+        case "out_for_delivery":
+            newStatus = "delivered"
+        default:
+            return
+        }
+        
+        isUpdating = true
+        
+        apiService.updateDeliveryStatus(
+            deliveryId: delivery.id,
+            status: newStatus,
+            notes: nil
+        )
+        .sink(
+            receiveCompletion: { completion in
+                DispatchQueue.main.async {
+                    self.isUpdating = false
+                    
+                    if case .failure(let error) = completion {
+                        print("Failed to update status: \(error)")
+                    }
+                }
+            },
+            receiveValue: { updatedDelivery in
+                DispatchQueue.main.async {
+                    self.isUpdating = false
+                    print("Status updated successfully to: \(updatedDelivery.status)")
+                }
+            }
+        )
+        .store(in: &cancellables)
+    }
+}
+
+// MARK: - API Status Badge
+struct ApiStatusBadge: View {
+    let status: String
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Circle()
+                .fill(Color(status.deliveryStatusColor))
+                .frame(width: 8, height: 8)
+
+            Text(status.deliveryStatusDisplayText)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundColor(Color(status.deliveryStatusColor))
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(Color(status.deliveryStatusColor).opacity(0.15))
+        .cornerRadius(20)
     }
 }
 
@@ -973,9 +1219,12 @@ struct ModernInfoRow: View {
     }
 }
 
-// MARK: - Map View
+// MARK: - Enhanced Map View
 struct MapView: View {
-    @State private var deliveries: [DeliveryItem] = [] // Will be populated by loadMapData
+    @EnvironmentObject var apiService: APIService
+    @EnvironmentObject var mapBoxManager: MapBoxManager
+    @State private var deliveries: [Delivery] = []
+    @State private var cancellables = Set<AnyCancellable>()
 
     var body: some View {
         NavigationView {
@@ -983,13 +1232,11 @@ struct MapView: View {
                 // Header
                 VStack(spacing: 16) {
                     HStack {
-                        Text("ແຜນທີ່ການສົ່ງ") // Translated: Delivery Map
+                        Text("ແຜນທີ່ການສົ່ງ")
                             .font(.system(size: 28, weight: .bold))
                         Spacer()
 
-                        Button(action: {
-                            // TODO: Refresh locations
-                        }) {
+                        Button(action: refreshDeliveries) {
                             Image(systemName: "arrow.clockwise")
                                 .font(.system(size: 18, weight: .medium))
                                 .foregroundColor(.orange)
@@ -1002,22 +1249,22 @@ struct MapView: View {
                     HStack(spacing: 12) {
                         MapStatCard(
                             icon: "location.fill",
-                            title: "ປາຍທາງ", // Translated: Destinations
-                            value: "\(deliveries.filter { $0.status != .delivered }.count)",
+                            title: "ປາຍທາງ",
+                            value: "\(deliveries.filter { $0.status != "delivered" }.count)",
                             color: .red
                         )
 
                         MapStatCard(
                             icon: "bicycle",
-                            title: "ກຳລັງສົ່ງ", // Translated: In Transit
-                            value: "\(deliveries.filter { $0.status == .outForDelivery }.count)",
+                            title: "ກຳລັງສົ່ງ",
+                            value: "\(deliveries.filter { $0.status == "out_for_delivery" }.count)",
                             color: .orange
                         )
 
                         MapStatCard(
                             icon: "checkmark.circle.fill",
-                            title: "ສຳເລັດ", // Translated: Completed
-                            value: "\(deliveries.filter { $0.status == .delivered }.count)",
+                            title: "ສຳເລັດ",
+                            value: "\(deliveries.filter { $0.status == "delivered" }.count)",
                             color: .green
                         )
                     }
@@ -1025,113 +1272,38 @@ struct MapView: View {
                 }
                 .background(.ultraThinMaterial)
 
-                // Map content
-                ZStack {
-                    // Map placeholder with modern design
-                    Rectangle()
-                        .fill(
-                            LinearGradient(
-                                colors: [.blue.opacity(0.1), .green.opacity(0.1)],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            )
-                        )
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-
-                    VStack(spacing: 20) {
-                        ZStack {
-                            Circle()
-                                .fill(.blue.opacity(0.2))
-                                .frame(width: 100, height: 100)
-
-                            Image(systemName: "map.fill")
-                                .font(.system(size: 40))
-                                .foregroundColor(.blue)
-                        }
-
-                        VStack(spacing: 8) {
-                            Text("ແຜນທີ່ຂັ້ນສູງ") // Translated: Advanced Map
-                                .font(.system(size: 24, weight: .bold))
-                                .foregroundColor(.primary)
-
-                            Text("ລະບົບແຜນທີ່ຈະສະແດງຢູ່ບ່ອນນີ້") // Translated: Map system will be displayed here
-                                .font(.system(size: 16))
-                                .foregroundColor(.secondary)
-
-                            Text("TODO: ເຊື່ອມຕໍ່ MapKit") // Kept as TODO, "ເຊື່ອມຕໍ່" is Lao for connect
-                                .font(.system(size: 14))
-                                .foregroundColor(.orange)
-                                .padding(.horizontal, 16)
-                                .padding(.vertical, 8)
-                                .background(.orange.opacity(0.1))
-                                .cornerRadius(20)
-                        }
-                    }
-                }
-
-                // Active deliveries
-                if !deliveries.filter({ $0.status != .delivered }).isEmpty {
-                    VStack(alignment: .leading, spacing: 12) {
-                        Text("ຈຸດສົ່ງທີ່ຕ້ອງໄປ") // Translated: Delivery Points
-                            .font(.system(size: 18, weight: .bold))
-                            .padding(.horizontal, 20)
-
-                        ScrollView(.horizontal, showsIndicators: false) {
-                            HStack(spacing: 12) {
-                                ForEach(deliveries.filter { $0.status != .delivered }) { delivery in
-                                    ModernMapCard(delivery: delivery)
-                                }
-                            }
-                            .padding(.horizontal, 20)
-                        }
-                    }
-                    .padding(.vertical, 16)
-                    .background(.ultraThinMaterial)
-                }
+                // MapBox Map
+                EnhancedMapView(deliveries: deliveries)
             }
             .navigationBarHidden(true)
         }
         .onAppear {
-            loadMapData()
+            loadDeliveries()
         }
     }
-
-    private func loadMapData() {
-        // Use same mock data as delivery list, already in Lao for relevant fields
-        deliveries = [
-            DeliveryItem(
-                id: 1,
-                orderID: "ORD1234567890",
-                customerName: "ສົມຊາຍ ໃຈດີ",
-                customerPhone: "+856 20 12345678",
-                address: "123 ຖະໜົນສີສະຫວັນວົງ, ຫຼວງພະບາງ",
-                status: .preparing,
-                items: [
-                    OrderItem(name: "ກາເຟຮ້ອນ", quantity: 2, price: 15000),
-                    OrderItem(name: "ເຂົ້າຈີ່ໝູ", quantity: 1, price: 35000)
-                ],
-                totalAmount: 65000,
-                estimatedTime: Date().addingTimeInterval(1800),
-                latitude: 19.8845,
-                longitude: 102.135
-            ),
-            DeliveryItem(
-                id: 2,
-                orderID: "ORD1234567891",
-                customerName: "ມາລີ ສວຍງາມ",
-                customerPhone: "+856 20 87654321",
-                address: "456 ຖະໜົນເລດຮ້ອມ, ຫຼວງພະບາງ",
-                status: .outForDelivery,
-                items: [
-                    OrderItem(name: "ນ້ຳເຊື່ອມ", quantity: 3, price: 12000),
-                    OrderItem(name: "ຂະໜົມເຄັກ", quantity: 1, price: 25000)
-                ],
-                totalAmount: 61000,
-                estimatedTime: Date().addingTimeInterval(900),
-                latitude: 19.8920,
-                longitude: 102.138
+    
+    private func loadDeliveries() {
+        guard let employee = apiService.currentEmployee else { return }
+        
+        apiService.getEmployeeDeliveries(employeeId: employee.id)
+            .sink(
+                receiveCompletion: { completion in
+                    if case .failure(let error) = completion {
+                        print("Failed to load deliveries for map: \(error)")
+                    }
+                },
+                receiveValue: { response in
+                    DispatchQueue.main.async {
+                        self.deliveries = response.data
+                        self.mapBoxManager.updateDeliveryLocations(from: response.data)
+                    }
+                }
             )
-        ]
+            .store(in: &cancellables)
+    }
+    
+    private func refreshDeliveries() {
+        loadDeliveries()
     }
 }
 
@@ -1217,11 +1389,11 @@ struct ModernMapCard: View {
     }
 }
 
-// MARK: - Profile View
+// MARK: - Profile View with API Integration
 struct ProfileView: View {
-    let employeeId: String
+    @EnvironmentObject var apiService: APIService
     @State private var showingLogoutAlert = false
-    @State private var todayStats = (delivered: 12, inProgress: 4, earned: 450000) // Sample data
+    @State private var todayStats = (delivered: 0, inProgress: 0, earned: 0)
 
     var body: some View {
         NavigationView {
@@ -1241,28 +1413,55 @@ struct ProfileView: View {
                                 .frame(width: 120, height: 120)
                                 .shadow(color: .orange.opacity(0.3), radius: 15, x: 0, y: 8)
 
-                            Image(systemName: "person.fill")
-                                .font(.system(size: 50))
-                                .foregroundColor(.white)
+                            // Profile image or initials
+                            if let employee = apiService.currentEmployee,
+                               let photoURL = employee.profilePhoto,
+                               !photoURL.isEmpty {
+                                AsyncImage(url: URL(string: photoURL)) { image in
+                                    image
+                                        .resizable()
+                                        .aspectRatio(contentMode: .fill)
+                                } placeholder: {
+                                    Image(systemName: "person.fill")
+                                        .font(.system(size: 50))
+                                        .foregroundColor(.white)
+                                }
+                                .frame(width: 120, height: 120)
+                                .clipShape(Circle())
+                            } else {
+                                Image(systemName: "person.fill")
+                                    .font(.system(size: 50))
+                                    .foregroundColor(.white)
+                            }
                         }
 
                         VStack(spacing: 8) {
-                            Text("ພະນັກງານສົ່ງອາຫານ") // Translated: Delivery Staff
-                                .font(.system(size: 24, weight: .bold))
-                                .foregroundColor(.primary)
-
-                            HStack {
-                                Image(systemName: "person.badge.key.fill")
-                                    .font(.system(size: 14))
-                                    .foregroundColor(.orange)
-                                Text("ລະຫັດ: \(employeeId)") // Translated: ID:
+                            if let employee = apiService.currentEmployee {
+                                Text(employee.fullName)
+                                    .font(.system(size: 24, weight: .bold))
+                                    .foregroundColor(.primary)
+                                
+                                Text(employee.position)
                                     .font(.system(size: 16, weight: .medium))
                                     .foregroundColor(.secondary)
+
+                                HStack {
+                                    Image(systemName: "person.badge.key.fill")
+                                        .font(.system(size: 14))
+                                        .foregroundColor(.orange)
+                                    Text("ລະຫັດ: \(employee.employeeId)")
+                                        .font(.system(size: 16, weight: .medium))
+                                        .foregroundColor(.secondary)
+                                }
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 8)
+                                .background(.orange.opacity(0.1))
+                                .cornerRadius(20)
+                            } else {
+                                Text("ພະນັກງານສົ່ງອາຫານ")
+                                    .font(.system(size: 24, weight: .bold))
+                                    .foregroundColor(.primary)
                             }
-                            .padding(.horizontal, 16)
-                            .padding(.vertical, 8)
-                            .background(.orange.opacity(0.1))
-                            .cornerRadius(20)
                         }
                     }
                     .padding(.top, 20)
@@ -1270,7 +1469,7 @@ struct ProfileView: View {
                     // Today's performance
                     VStack(spacing: 16) {
                         HStack {
-                            Text("ຜົນງານມື້ນີ້") // Translated: Today's Performance
+                            Text("ຜົນງານມື້ນີ້")
                                 .font(.system(size: 20, weight: .bold))
                             Spacer()
                             Text(Date().formatted(date: .abbreviated, time: .omitted))
@@ -1281,14 +1480,14 @@ struct ProfileView: View {
                         HStack(spacing: 16) {
                             ModernStatCard(
                                 icon: "checkmark.circle.fill",
-                                title: "ສົ່ງແລ້ວ", // Translated: Delivered
+                                title: "ສົ່ງແລ້ວ",
                                 value: "\(todayStats.delivered)",
                                 color: .green
                             )
 
                             ModernStatCard(
                                 icon: "bicycle",
-                                title: "ກຳລັງສົ່ງ", // Translated: In Progress / Delivering
+                                title: "ກຳລັງສົ່ງ",
                                 value: "\(todayStats.inProgress)",
                                 color: .orange
                             )
@@ -1306,7 +1505,7 @@ struct ProfileView: View {
                     VStack(spacing: 12) {
                         ModernMenuButton(
                             icon: "chart.bar.fill",
-                            title: "ສະຖິຕິການເຮັດວຽກ", // Translated: Work Statistics
+                            title: "ສະຖິຕິການເຮັດວຽກ",
                             color: .blue
                         ) {
                             // TODO: Show statistics
@@ -1314,7 +1513,7 @@ struct ProfileView: View {
 
                         ModernMenuButton(
                             icon: "bell.fill",
-                            title: "ການແຈ້ງເຕືອນ", // Translated: Notifications
+                            title: "ການແຈ້ງເຕືອນ",
                             color: .purple
                         ) {
                             // TODO: Notification settings
@@ -1322,7 +1521,7 @@ struct ProfileView: View {
 
                         ModernMenuButton(
                             icon: "gear",
-                            title: "ຕັ້ງຄ່າ", // Translated: Settings
+                            title: "ຕັ້ງຄ່າ",
                             color: .gray
                         ) {
                             // TODO: Settings
@@ -1330,7 +1529,7 @@ struct ProfileView: View {
 
                         ModernMenuButton(
                             icon: "questionmark.circle.fill",
-                            title: "ຊ່ວຍເຫຼືອ", // Translated: Help
+                            title: "ຊ່ວຍເຫຼືອ",
                             color: .cyan
                         ) {
                             // TODO: Help
@@ -1345,7 +1544,7 @@ struct ProfileView: View {
                         HStack {
                             Image(systemName: "rectangle.portrait.and.arrow.right")
                                 .font(.system(size: 18, weight: .semibold))
-                            Text("ອອກຈາກລະບົບ") // Translated: Logout
+                            Text("ອອກຈາກລະບົບ")
                                 .font(.system(size: 18, weight: .bold))
                         }
                         .foregroundColor(.red)
@@ -1359,17 +1558,16 @@ struct ProfileView: View {
             }
             .navigationBarHidden(true)
         }
-        .alert("ອອກຈາກລະບົບ", isPresented: $showingLogoutAlert) { // Translated: Logout
-            Button("ອອກຈາກລະບົບ", role: .destructive) { // Translated: Logout
-                // TODO: Logout
+        .alert("ອອກຈາກລະບົບ", isPresented: $showingLogoutAlert) {
+            Button("ອອກຈາກລະບົບ", role: .destructive) {
+                apiService.logout()
             }
-            Button("ຍົກເລີກ", role: .cancel) { } // Translated: Cancel
+            Button("ຍົກເລີກ", role: .cancel) { }
         } message: {
-            Text("ທ່ານຕ້ອງການອອກຈາກລະບົບບໍ່?") // Translated: Do you want to logout?
+            Text("ທ່ານຕ້ອງການອອກຈາກລະບົບບໍ່?")
         }
     }
 }
-
 struct ModernStatCard: View { // This struct is used in ProfileView and needs its titles translated there.
     let icon: String
     let title: String
